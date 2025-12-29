@@ -3,7 +3,7 @@ import { AuthConfig } from "convex/server";
 export default {
   providers: [
     {
-      domain: "https://dashing-hound-24.clerk.accounts.dev",
+      domain: process.env.CLERK_JWT_ISSUER_DOMAIN!,
       applicationID: "convex",
     },
   ]
