@@ -13,6 +13,7 @@ const GenerateProgram = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const { user } = useUser();
   const router = useRouter();
@@ -38,7 +39,6 @@ const GenerateProgram = () => {
     }
   }, [callEnded, router]);
 
-  // setup event listners for vapi
   // setup event listeners for vapi
   useEffect(() => {
     const handleCallStart = () => {
@@ -46,6 +46,7 @@ const GenerateProgram = () => {
       setConnecting(false);
       setCallActive(true);
       setCallEnded(false);
+      setError(null);
     };
 
     const handleCallEnd = () => {
@@ -74,14 +75,40 @@ const GenerateProgram = () => {
     };
 
     const handleError = (error: any) => {
-      console.error("Vapi Error:", error);
+      console.error("Vapi Error Details:", {
+        error,
+        type: typeof error,
+        keys: Object.keys(error || {}),
+        message: error?.message,
+        stack: error?.stack,
+        stringified: JSON.stringify(error)
+      });
       
       // Prevent the UI from getting stuck in "Connecting" state if an error occurs
       setConnecting(false);
       setCallActive(false);
-
-      // Optional: If you want to stop the redirect on error
-      // setCallEnded(false); 
+      
+      // Parse the error message for better user feedback
+      let errorMessage = "Failed to connect. Please check your configuration.";
+      
+      // Check for WebRTC transport errors
+      if (error?.type === "transport-error" || JSON.stringify(error).includes("transport")) {
+        errorMessage = "Network connection failed. Please check: 1) Your microphone permissions, 2) Your internet connection, 3) Try disabling VPN/firewall if active, 4) Try a different browser.";
+      } else if (error?.error?.message?.message) {
+        const apiError = error.error.message.message;
+        
+        if (apiError.includes("Does Not Exist")) {
+          errorMessage = "The Assistant/Workflow ID does not exist. Please check your VAPI configuration in the dashboard and update your .env.local file with the correct Workflow ID.";
+        } else {
+          errorMessage = apiError;
+        }
+      } else if (error?.error?.error?.message) {
+        errorMessage = error.error.error.message;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      }
+      
+      setError(errorMessage);
     };
 
     // Attach listeners
@@ -103,7 +130,7 @@ const GenerateProgram = () => {
     };
   }, []);
 
-const toggleCall = async () => {
+  const toggleCall = async () => {
     if (callActive) {
       vapi.stop();
     } else {
@@ -111,22 +138,48 @@ const toggleCall = async () => {
         setConnecting(true);
         setMessages([]);
         setCallEnded(false);
+        setError(null);
 
-        const fullName = user?.firstName
-          ? `${user.firstName} ${user.lastName || ""}`.trim()
-          : "There";
-        console.log("Assistent id: ", process.env.NEXT_PUBLIC_VAPI_ASSISTENT_ID!);
-        await vapi.start(process.env.NEXT_PUBLIC_VAPI_ASSISTENT_ID!);
+        // Check microphone permissions first
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach(track => track.stop()); // Release immediately
+          console.log("Microphone access granted");
+        } catch (micError) {
+          throw new Error("Microphone access denied. Please allow microphone access and try again.");
+        }
+
+        const workflowId = process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID;
+        
+        // Validation
+        if (!workflowId) {
+          throw new Error("NEXT_PUBLIC_VAPI_WORKFLOW_ID is not configured. Please add it to your .env.local file.");
+        }
+        
+        const fullName = user?.firstName ? `${user.firstName} ${user.lastName || ""}`.trim() : "There"
+        // IMPORTANT: Workflows must be passed as the 4th parameter to vapi.start()
+        // Syntax: vapi.start(assistantId, assistantOverrides, transcriber, workflowId)
+        await vapi.start(null!, null!, null!, workflowId, {
+          variableValues: {
+            full_name: fullName,
+            user_id: user?.id,
+          }
+        });
       } catch (error) {
         console.error("Failed to start call:", error);
+        
+        const errorMessage = error instanceof Error 
+          ? error.message 
+          : "Unknown error occurred while starting the call";
+        
+        setError(errorMessage);
         setConnecting(false);
-        // This catch block prevents the initial connection failure from crashing the app
       }
     }
   };
 
   return (
-    <div className="flex flex-col min-h-screen text-foreground overflow-hidden  pb-6 pt-24">
+    <div className="flex flex-col min-h-screen text-foreground overflow-hidden pb-6 pt-24">
       <div className="container mx-auto px-4 h-full max-w-5xl">
         {/* Title */}
         <div className="text-center mb-8">
@@ -140,12 +193,34 @@ const toggleCall = async () => {
           </p>
         </div>
 
+        {/* Error Alert */}
+        {error && (
+          <div className="mb-6 p-4 bg-destructive/10 border border-destructive rounded-lg">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 text-destructive">⚠️</div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-destructive mb-1">Connection Error</h3>
+                <p className="text-sm text-destructive/90">{error}</p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Please check your Vapi configuration and try again.
+                </p>
+              </div>
+              <button 
+                onClick={() => setError(null)}
+                className="text-destructive hover:text-destructive/80"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Calling area */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
           {/* AI ASSISTANT CARD */}
           <Card className="bg-card/90 backdrop-blur-sm border border-border overflow-hidden relative">
             <div className="aspect-video flex flex-col items-center justify-center p-6 relative">
-              {/* Ai voice animation */}
+              {/* AI voice animation */}
               <div
                 className={`absolute inset-0 ${
                   isSpeaking ? "opacity-30" : "opacity-0"
@@ -194,7 +269,6 @@ const toggleCall = async () => {
               </p>
 
               {/* SPEAKING INDICATOR */}
-
               <div
                 className={`mt-4 flex items-center gap-2 px-3 py-1 rounded-full bg-card border border-border ${
                   isSpeaking ? "border-primary" : ""
@@ -220,16 +294,13 @@ const toggleCall = async () => {
           </Card>
 
           {/* User card */}
-          <Card
-            className={`bg-card/90 backdrop-blur-sm border overflow-hidden relative`}
-          >
+          <Card className="bg-card/90 backdrop-blur-sm border overflow-hidden relative">
             <div className="aspect-video flex flex-col items-center justify-center p-6 relative">
               {/* User Image */}
               <div className="relative size-32 mb-4">
                 <img
                   src={user?.imageUrl}
                   alt="User"
-                  // ADD THIS "size-full" class to make it rounded on all images
                   className="size-full object-cover rounded-full"
                 />
               </div>
@@ -242,16 +313,15 @@ const toggleCall = async () => {
               </p>
 
               {/* User Ready Text */}
-              <div
-                className={`mt-4 flex items-center gap-2 px-3 py-1 rounded-full bg-card border`}
-              >
-                <div className={`w-2 h-2 rounded-full bg-muted`} />
+              <div className="mt-4 flex items-center gap-2 px-3 py-1 rounded-full bg-card border">
+                <div className="w-2 h-2 rounded-full bg-muted" />
                 <span className="text-xs text-muted-foreground">Ready</span>
               </div>
             </div>
           </Card>
         </div>
-        {/* MESSAGE COINTER  */}
+
+        {/* MESSAGE CONTAINER */}
         {messages.length > 0 && (
           <div
             ref={messageConatinerRef}
@@ -261,7 +331,7 @@ const toggleCall = async () => {
               {messages.map((msg, index) => (
                 <div key={index} className="message-item animate-fadeIn">
                   <div className="font-semibold text-xs text-muted-foreground mb-1">
-                    {msg.role === "assistant" ? "CodeFlex AI" : "You"}:
+                    {msg.role === "assistant" ? "ZenFit AI" : "You"}:
                   </div>
                   <p className="text-foreground">{msg.content}</p>
                 </div>
