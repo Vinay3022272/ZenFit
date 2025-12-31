@@ -20,6 +20,45 @@ const GenerateProgram = () => {
 
   const messageConatinerRef = useRef<HTMLDivElement>(null);
 
+  // SOLUTION to get rid of "Meeting has ended" error
+  useEffect(() => {
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    
+    // override console.error to ignore known errors
+    console.error = function (msg, ...args) {
+      if (
+        msg &&
+        (msg.includes("Meeting has ended") ||
+          (args[0] && args[0].toString().includes("Meeting has ended")))
+      ) {
+        console.log("Ignoring known error: Meeting has ended");
+        return;
+      }
+
+      return originalError.call(console, msg, ...args);
+    };
+
+    // override console.warn to ignore audio processor warnings
+    console.warn = function (msg, ...args) {
+      if (
+        msg &&
+        (msg.includes("Ignoring settings for browser") ||
+          msg.includes("input processor"))
+      ) {
+        return; // silently ignore
+      }
+
+      return originalWarn.call(console, msg, ...args);
+    };
+
+    // restore original handlers on unmount
+    return () => {
+      console.error = originalError;
+      console.warn = originalWarn;
+    };
+  }, []);
+
   // auto-scroll messages
   useEffect(() => {
     if (messageConatinerRef.current) {
@@ -91,21 +130,47 @@ const GenerateProgram = () => {
       // Parse the error message for better user feedback
       let errorMessage = "Failed to connect. Please check your configuration.";
       
+      // Handle empty error objects
+      if (!error || Object.keys(error).length === 0) {
+        errorMessage = "Connection failed. This might be due to: 1) Network issues, 2) Invalid workflow configuration, 3) API service issues. Please try again in a moment.";
+        setError(errorMessage);
+        return;
+      }
+      
       // Check for WebRTC transport errors
       if (error?.type === "transport-error" || JSON.stringify(error).includes("transport")) {
         errorMessage = "Network connection failed. Please check: 1) Your microphone permissions, 2) Your internet connection, 3) Try disabling VPN/firewall if active, 4) Try a different browser.";
-      } else if (error?.error?.message?.message) {
+      } 
+      // Check for daily-co errors (meeting ended)
+      else if (error?.type === "daily-error" && error?.error?.message?.msg === "Meeting has ended") {
+        // Ignore this error as it's expected when call ends
+        console.log("Meeting ended normally");
+        return;
+      }
+      // Check for workflow errors
+      else if (error?.error?.message?.message) {
         const apiError = error.error.message.message;
         
         if (apiError.includes("Does Not Exist")) {
           errorMessage = "The Assistant/Workflow ID does not exist. Please check your VAPI configuration in the dashboard and update your .env.local file with the correct Workflow ID.";
+        } else if (apiError.includes("rate limit") || apiError.includes("quota")) {
+          errorMessage = "Service is temporarily busy due to high demand. Please try again in a few moments.";
         } else {
           errorMessage = apiError;
         }
-      } else if (error?.error?.error?.message) {
+      } 
+      else if (error?.error?.error?.message) {
         errorMessage = error.error.error.message;
-      } else if (error?.message) {
+      } 
+      else if (error?.message) {
         errorMessage = error.message;
+      }
+      // Check for HTTP error responses
+      else if (error?.error?.statusCode === 503 || error?.error?.statusCode === 500) {
+        errorMessage = "AI service is temporarily unavailable. Please try again in a moment.";
+      }
+      else if (error?.error?.statusCode === 429) {
+        errorMessage = "Service is temporarily busy. Please try again in a few moments.";
       }
       
       setError(errorMessage);
@@ -156,7 +221,10 @@ const GenerateProgram = () => {
           throw new Error("NEXT_PUBLIC_VAPI_WORKFLOW_ID is not configured. Please add it to your .env.local file.");
         }
         
-        const fullName = user?.firstName ? `${user.firstName} ${user.lastName || ""}`.trim() : "There"
+        const fullName = user?.firstName ? `${user.firstName} ${user.lastName || ""}`.trim() : "There";
+        
+        console.log("Starting Vapi workflow with ID:", workflowId);
+        
         // IMPORTANT: Workflows must be passed as the 4th parameter to vapi.start()
         // Syntax: vapi.start(assistantId, assistantOverrides, transcriber, workflowId)
         await vapi.start(null!, null!, null!, workflowId, {
@@ -200,9 +268,9 @@ const GenerateProgram = () => {
               <div className="shrink-0 text-destructive">⚠️</div>
               <div className="flex-1">
                 <h3 className="font-semibold text-destructive mb-1">Connection Error</h3>
-                <p className="text-sm text-destructive/90">{error}</p>
+                <p className="text-sm text-destructive/90 whitespace-pre-line">{error}</p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  Please check your Vapi configuration and try again.
+                  If the issue persists, please contact support.
                 </p>
               </div>
               <button 
